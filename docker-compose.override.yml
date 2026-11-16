@@ -1,0 +1,9 @@
+# Subscription-bridge networking.
+# Docker Compose auto-merges this with docker-compose.yml. It lets the artex
+# container reach the bridge running on the host at host.docker.internal:8745
+# (on Linux, host-gateway maps that name to the host). Set ARTEX_LLM_BASE_URL=
+# http://host.docker.internal:8745 in .env.
+services:
+  artex:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
