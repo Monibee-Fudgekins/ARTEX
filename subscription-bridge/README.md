@@ -86,15 +86,16 @@ emits the expected `set_goals` / `add_task_scope` / `add_intent` tool calls.
 Use the bridge only for authorized testing of systems you own or are permitted to
 test — the same rule that applies to ARTEX itself.
 
-## Known gap: non-streaming tool dispatch
+## Streaming (required) — the full loop works
 
-The bridge runs ARTEX in non-streaming mode (`ARTEX_LLM_STREAM=false`), and the
-decomposition/planner calls return correct tool_use blocks, but ARTEX's
-non-streaming path does not reliably persist those tool calls (no intents/scope get
-created, so no workers spawn). ARTEX is built around streaming; a streaming (SSE)
-bridge is the likely fix. Until then the planner runs but the autonomous loop does
-not fully execute. (For the full offensive loop today, a real Anthropic/OpenAI API
-key with streaming is the supported path.)
+The bridge serves a complete Anthropic **SSE** stream (`/v1/messages` with
+`stream:true`): it runs `claude` to get the whole answer, then emits a well-formed
+`message_start` → `content_block_start/delta/stop` (with `input_json_delta` for
+tool_use) → `message_delta` → `message_stop` sequence. ARTEX consumes it exactly
+like a live stream and dispatches tool_use blocks, so decomposition registers goals
+and the planner spawns workers that run the assessment. Keep `ARTEX_LLM_STREAM=true`
+(the compose override sets it); non-streaming does NOT reliably persist tool calls,
+so streaming is required.
 
 ## Limits / caveats
 
