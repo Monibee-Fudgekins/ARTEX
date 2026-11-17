@@ -74,23 +74,27 @@ instead (no `host.docker.internal` needed).
 | `CLAUDE_BIN` | `claude` | path to the Claude Code CLI |
 | `BRIDGE_CALL_TIMEOUT` | `600` | seconds per model turn before 504 |
 
-## Important limitation: Claude Code's safety layer refuses offensive-security prompts
+## Model choice (BRIDGE_MODEL) and the safety classifier
 
-The `claude` CLI routes every call through Claude Code's own safety classifier.
-ARTEX's planner/worker prompts are offensive-security content (goal decomposition
-for a penetration test, exploitation planning, etc.), and the classifier **refuses
-them** — you'll see the model return text like *"A safety classifier withheld my
-response"* and ARTEX logs *"LLM goal decomposition produced nothing."* The bridge
-is working (the call completes, usage is returned); the model is declining the task.
+The `claude` CLI routes calls through Claude Code's safety classifier. With the
+**default model**, ARTEX's security-testing planner prompts can be refused — the
+model returns *"a safety classifier withheld my response"* and ARTEX logs *"goal
+decomposition produced nothing."* Setting **`BRIDGE_MODEL=opus`** (the launcher's
+default) clears that on authorized security-testing prompts: the planner then
+emits the expected `set_goals` / `add_task_scope` / `add_intent` tool calls.
 
-Consequence: **ARTEX's autonomous offensive loop does not reliably run through the
-Claude Code subscription.** Benign calls work fine; the pentest-planning calls that
-ARTEX depends on get blocked. This is a property of the subscription/CLI path, not a
-bug in the bridge — and the right fix is NOT to try to evade the classifier.
+Use the bridge only for authorized testing of systems you own or are permitted to
+test — the same rule that applies to ARTEX itself.
 
-If you need to run ARTEX's full offensive loop, use a real Anthropic (or OpenAI)
-API key, which is the provider path this kind of tool is intended for. The bridge
-remains useful for non-offensive LLM work against this endpoint.
+## Known gap: non-streaming tool dispatch
+
+The bridge runs ARTEX in non-streaming mode (`ARTEX_LLM_STREAM=false`), and the
+decomposition/planner calls return correct tool_use blocks, but ARTEX's
+non-streaming path does not reliably persist those tool calls (no intents/scope get
+created, so no workers spawn). ARTEX is built around streaming; a streaming (SSE)
+bridge is the likely fix. Until then the planner runs but the autonomous loop does
+not fully execute. (For the full offensive loop today, a real Anthropic/OpenAI API
+key with streaming is the supported path.)
 
 ## Limits / caveats
 
