@@ -250,6 +250,50 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_sse(self, resp):
+        """Emit a complete Anthropic Messages SSE stream for an already-built
+        response. We have the full answer in hand, so we serialize the whole
+        event sequence at once; ARTEX's streaming path consumes it identically
+        to a live stream and dispatches tool_use blocks."""
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream")
+        self.send_header("cache-control", "no-cache")
+        self.send_header("connection", "close")
+        self.end_headers()
+
+        usage = resp["usage"]
+
+        def frame(evt, obj):
+            self.wfile.write(
+                ("event: " + evt + "\ndata: " + json.dumps(obj) + "\n\n").encode()
+            )
+
+        frame("message_start", {"type": "message_start", "message": {
+            "role": "assistant", "content": [],
+            "usage": {"input_tokens": usage["input_tokens"], "output_tokens": 1,
+                      "cache_read_input_tokens": usage["cache_read_input_tokens"],
+                      "cache_creation_input_tokens": usage["cache_creation_input_tokens"]},
+        }})
+        for i, block in enumerate(resp["content"]):
+            if block["type"] == "tool_use":
+                frame("content_block_start", {"type": "content_block_start", "index": i,
+                    "content_block": {"type": "tool_use", "id": block["id"], "name": block["name"], "input": {}}})
+                frame("content_block_delta", {"type": "content_block_delta", "index": i,
+                    "delta": {"type": "input_json_delta", "partial_json": json.dumps(block.get("input", {}))}})
+            else:
+                frame("content_block_start", {"type": "content_block_start", "index": i,
+                    "content_block": {"type": "text", "text": ""}})
+                frame("content_block_delta", {"type": "content_block_delta", "index": i,
+                    "delta": {"type": "text_delta", "text": block.get("text", "")}})
+            frame("content_block_stop", {"type": "content_block_stop", "index": i})
+        frame("message_delta", {"type": "message_delta",
+            "delta": {"stop_reason": resp["stop_reason"]},
+            "usage": {"output_tokens": usage["output_tokens"], "input_tokens": usage["input_tokens"],
+                      "cache_read_input_tokens": usage["cache_read_input_tokens"],
+                      "cache_creation_input_tokens": usage["cache_creation_input_tokens"]}})
+        frame("message_stop", {"type": "message_stop"})
+        self.wfile.flush()
+
     def do_GET(self):
         if self.path.rstrip("/") in ("/health", "/healthz"):
             self._send(200, {"status": "ok", "backend": CLAUDE_BIN})
@@ -280,10 +324,14 @@ class Handler(BaseHTTPRequestHandler):
                 (b.get("type"), b.get("name")) for b in resp["content"]
             ]
             self.log_message(
-                "turn ok in %.1fs: tools_offered=%s emitted=%s stop=%s",
+                "turn ok in %.1fs: tools_offered=%s emitted=%s stop=%s stream=%s",
                 time.time() - started, tools_offered, emitted, resp["stop_reason"],
+                bool(req.get("stream")),
             )
-            self._send(200, resp)
+            if req.get("stream"):
+                self._send_sse(resp)
+            else:
+                self._send(200, resp)
         except subprocess.TimeoutExpired:
             self._send(504, {"type": "error", "error": {"type": "timeout_error", "message": "claude call timed out"}})
         except Exception as e:  # noqa: BLE001 - surface any failure as an API error

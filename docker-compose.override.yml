@@ -7,3 +7,7 @@ services:
   artex:
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    environment:
+      # The base compose file doesn't pass this through; the subscription bridge
+      # needs streaming ON (it emits a full Anthropic SSE sequence).
+      ARTEX_LLM_STREAM: ${ARTEX_LLM_STREAM:-true}
