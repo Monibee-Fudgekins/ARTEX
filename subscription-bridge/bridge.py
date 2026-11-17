@@ -90,15 +90,14 @@ def _block_text(block):
     return ""
 
 
-def render_prompt(system_blocks, messages, tools):
-    """Render ARTEX's system + tools + transcript into a single reasoning prompt."""
-    out = []
-    sys_text = "\n\n".join(
-        b.get("text", "") for b in (system_blocks or []) if b.get("text")
-    )
-    if sys_text:
-        out.append("# SYSTEM INSTRUCTIONS\n" + sys_text)
+def system_text(system_blocks):
+    return "\n\n".join(b.get("text", "") for b in (system_blocks or []) if b.get("text"))
 
+
+def render_prompt(messages, tools):
+    """Render the tool manifest + transcript into the reasoning prompt body.
+    (The caller's system prompt is passed to claude as the real system prompt.)"""
+    out = []
     if tools:
         out.append("# AVAILABLE TOOLS")
         for t in tools:
@@ -130,20 +129,29 @@ def render_prompt(system_blocks, messages, tools):
                 )
     out.append(
         "# YOUR TASK\nProduce the next assistant turn now as JSON ('blocks'). "
-        "To act, emit a tool_use block naming one of the AVAILABLE TOOLS above — the "
-        "external system runs it and returns the result next turn. Do NOT try to run "
-        "anything yourself and do NOT report any tool as unavailable. Use text blocks "
-        "only to analyze or to give a final conclusion."
+        "CRITICAL: if the SYSTEM INSTRUCTIONS tell you to use a specific tool (for "
+        "example set_goals, set_constraints, add_task_scope), you MUST emit a "
+        "tool_use block that CALLS that tool with the required 'input' — that is the "
+        "only way the work gets recorded; answering in prose instead records nothing "
+        "and fails the task. Emit as many tool_use blocks as the step needs. The "
+        "external system runs each tool and returns results next turn. Do NOT try to "
+        "run anything yourself and do NOT report any tool as unavailable. Use a text "
+        "block only when no tool applies (pure analysis or a final conclusion)."
     )
     return "\n\n".join(out)
 
 
-def run_claude(system_prompt, prompt):
-    """Run the claude CLI as a stateless reasoner; return (structured, usage, stop)."""
+def run_claude(artex_system, prompt):
+    """Run the claude CLI as a stateless reasoner; return (structured, usage, stop).
+    The effective system prompt is the bridge's core framing followed by ARTEX's
+    own system instructions, so the model acts under ARTEX's framing."""
+    full_system = CORE_SYSTEM
+    if artex_system:
+        full_system += "\n\n# SYSTEM INSTRUCTIONS (from the calling system)\n" + artex_system
     with tempfile.NamedTemporaryFile(
         "w", suffix=".txt", delete=False, prefix="artex_sys_"
     ) as sf:
-        sf.write(system_prompt)
+        sf.write(full_system)
         sys_path = sf.name
     try:
         proc = subprocess.run(
@@ -252,12 +260,16 @@ class Handler(BaseHTTPRequestHandler):
             sys_blocks = req.get("system")
             if isinstance(sys_blocks, str):
                 sys_blocks = [{"type": "text", "text": sys_blocks}]
-            prompt = render_prompt(sys_blocks, req.get("messages", []), req.get("tools", []))
-            structured, usage, stop = run_claude(CORE_SYSTEM, prompt)
+            prompt = render_prompt(req.get("messages", []), req.get("tools", []))
+            structured, usage, stop = run_claude(system_text(sys_blocks), prompt)
             resp = to_anthropic_message(structured, usage, stop)
+            tools_offered = [t.get("name") for t in req.get("tools", [])]
+            emitted = [
+                (b.get("type"), b.get("name")) for b in resp["content"]
+            ]
             self.log_message(
-                "turn ok in %.1fs: %d block(s), stop=%s",
-                time.time() - started, len(resp["content"]), resp["stop_reason"],
+                "turn ok in %.1fs: tools_offered=%s emitted=%s stop=%s",
+                time.time() - started, tools_offered, emitted, resp["stop_reason"],
             )
             self._send(200, resp)
         except subprocess.TimeoutExpired:

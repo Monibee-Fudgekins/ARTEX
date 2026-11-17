@@ -74,6 +74,24 @@ instead (no `host.docker.internal` needed).
 | `CLAUDE_BIN` | `claude` | path to the Claude Code CLI |
 | `BRIDGE_CALL_TIMEOUT` | `600` | seconds per model turn before 504 |
 
+## Important limitation: Claude Code's safety layer refuses offensive-security prompts
+
+The `claude` CLI routes every call through Claude Code's own safety classifier.
+ARTEX's planner/worker prompts are offensive-security content (goal decomposition
+for a penetration test, exploitation planning, etc.), and the classifier **refuses
+them** — you'll see the model return text like *"A safety classifier withheld my
+response"* and ARTEX logs *"LLM goal decomposition produced nothing."* The bridge
+is working (the call completes, usage is returned); the model is declining the task.
+
+Consequence: **ARTEX's autonomous offensive loop does not reliably run through the
+Claude Code subscription.** Benign calls work fine; the pentest-planning calls that
+ARTEX depends on get blocked. This is a property of the subscription/CLI path, not a
+bug in the bridge — and the right fix is NOT to try to evade the classifier.
+
+If you need to run ARTEX's full offensive loop, use a real Anthropic (or OpenAI)
+API key, which is the provider path this kind of tool is intended for. The bridge
+remains useful for non-offensive LLM work against this endpoint.
+
 ## Limits / caveats
 
 - **Non-streaming only.** `ARTEX_LLM_STREAM=false` is required (set in `.env`); the
